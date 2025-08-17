@@ -74,7 +74,9 @@ ui <- fluidPage(
                                 br(),
                                 h4("Node Merging"),
                                 uiOutput("studies_selector"), 
-                                actionButton("apply_merge", "Apply Node Merging")   ## Button to trigger node/component merging
+                                actionButton("apply_merge", "Apply Node Merging"),   # Button to trigger node/component merging
+                                actionButton("reset_data", "Reset to Original Data", icon = icon("refresh"))
+                                
                          )
                        )
               ),
@@ -166,7 +168,24 @@ ui <- fluidPage(
                                 p("Source code and instructions available on GitHub.")
                          )
                        )
-              )
+              ),
+            tabPanel("Export",
+                     value = "export",
+                     fluidRow(
+                       column(4,
+                              selectInput("report_format", "Report format:",
+                                          choices = c("PDF" = "pdf",
+                                                      "Word (docx)" = "word",
+                                                      "HTML" = "html")),
+                              actionButton("export_report", "Generate Report")
+                       ),
+                       column(8,
+                              downloadButton("download_report", "Download report")
+                              
+                       )
+                     )
+            )
+            
   )
 )
 
@@ -287,7 +306,6 @@ server <- function(input, output, session) {
     ))
   })
   
-  # ---- Confirm merging and update data ----
   observeEvent(input$confirm_merge, {
     req(input$new_family_name, input$selected_components_to_merge)
     
@@ -295,15 +313,13 @@ server <- function(input, output, session) {
     sel_components <- input$selected_components_to_merge
     new_name <- input$new_family_name
     
-    # Function to merge selected components into a new name
     merge_components <- function(treatment, components, new_name) {
       parts <- trimws(unlist(strsplit(treatment, split = "[+/]")))
       parts[parts %in% components] <- new_name
       parts <- unique(parts)
       paste(parts, collapse = " + ")
-      
     }
-    # Update treat1 and treat2 for selected studies
+    
     new_data <- raw_data() %>%
       mutate(
         treat1_new = ifelse(study %in% sel_studies, 
@@ -314,7 +330,6 @@ server <- function(input, output, session) {
                             treat2)
       )
     
-    # Check for self-loops after merging
     self_loops <- new_data %>% filter(treat1_new == treat2_new)
     
     if(nrow(self_loops) > 0){
@@ -325,21 +340,31 @@ server <- function(input, output, session) {
         footer = modalButton("Got it")
       ))
     } else {
-      # Apply changes: drop old treat1/treat2, rename new columns, update reactive data
       new_data <- new_data %>% 
         select(-treat1, -treat2) %>% 
         rename(treat1 = treat1_new, treat2 = treat2_new)
       
-      raw_data(new_data)
+      raw_data(new_data)            # <---- HERE THE MODEL WAS NOT TRIGGERED
+      cnma_model()                 # <---- ADD: to run the model again
       
       removeModal()
       
       showNotification(
-        paste("Τα components συγχωνεύθηκαν στον κόμβο", new_name),
+        paste("Components merged into the node", new_name),
         type = "message"
       )
     }
   })
+  # ---- Reset Node Merging ----
+  observeEvent(input$reset_data, {
+    data <- get_data_from_redcap()
+    data <- convert_to_pairwise(data)
+    raw_data(data)
+    cnma_model()   # rerun the model 
+    showNotification("Dataset reset to original.", type = "message")
+  })
+  
+
   
   
   
@@ -358,33 +383,46 @@ server <- function(input, output, session) {
   
   # ---- League table ----
   output$league_table <- renderTable({
-    req(cnma_model())
     nma <- cnma_model()
+    validate(need(!is.null(nma), "Model is not available."))
+    
+    # dont present league table if we have 3 or less treatments
+    # or we have disconnected (discomb) model
+    if (inherits(nma, "discomb") || length(nma$trts) < 3) {
+      return(data.frame(Message = "League table not applicable to this network"))
+    }
+    
     tryCatch({
       mat <- netleague(nma)
-      if (is.null(dim(mat)) || length(dim(mat)) != 2) {
-        return(data.frame(Message = "League table not available"))
-      }
+      # modify to a dataframe
       as.data.frame.matrix(mat)
     }, error = function(e) {
-      data.frame(Error = "Failed to generate league table")
+      data.frame(Message = "Failed to generate league table")
     })
   }, rownames = TRUE)
   
+  
   # ---- Ranking table ----
   output$ranking_table <- renderTable({
-    req(cnma_model())
     nma <- cnma_model()
+    validate(need(!is.null(nma), "Model is not available."))
+    
+    # do not try ranking if model is discomb (disconnected) or only 1 treatment
+    if (inherits(nma, "discomb") || length(nma$trts) < 3) {
+      return(data.frame(Message = "Ranking not applicable to this network"))
+    }
+    
     tryCatch({
-      pscores <- netrank(nma)
+      ps <- netrank(nma)
       data.frame(
-        Treatment = names(pscores$p.score),
-        P_score = round(pscores$p.score, 3)
+        Treatment = names(ps$p.score),
+        P_score = round(ps$p.score, 3)
       )
     }, error = function(e) {
-      data.frame(Message = "P-score not available")
+      data.frame(Message = "Failed to calculate treatment ranking")
     })
-  })
+  }, rownames=FALSE)
+  
   
   # ---- Node-splitting results table ----
   output$netsplit_table <- renderTable({
@@ -458,6 +496,52 @@ server <- function(input, output, session) {
   
   
   
+  # ---- Export Report ----
+  observeEvent(input$export_report, {
+    req(cnma_model())
+    
+    tmpFile <- tempfile(fileext = switch(input$report_format,
+                                         pdf = ".pdf",
+                                         word = ".docx",
+                                         html = ".html"))
+    
+    rmarkdown::render(
+      input = "reports/report_template.Rmd",
+      output_format = switch(input$report_format,
+                             pdf = "pdf_document",
+                             word = "word_document",
+                             html = "html_document"),
+      output_file = tmpFile,
+      params = list(
+        nma      = cnma_model(),
+        raw_data = raw_data()
+      )
+      
+    )
+    
+    
+  })
+  
+  output$download_report <- downloadHandler(
+    filename = function() {
+      paste0("report_", Sys.Date(), ".", switch(input$report_format,
+                                                pdf="pdf", word="docx", html="html"))
+    },
+    content = function(file) {
+      rmarkdown::render(
+        input = "reports/report_template.Rmd",
+        output_format = switch(input$report_format,
+                               pdf = "pdf_document",
+                               word = "word_document",
+                               html = "html_document"),
+        output_file = file,
+        params = list(
+          nma      = cnma_model(),
+          raw_data = raw_data()
+        )
+      )
+    }
+  )
   
   
   
@@ -505,6 +589,7 @@ server <- function(input, output, session) {
       }
       
     }
+    
   })
   
 }
