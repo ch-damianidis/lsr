@@ -182,7 +182,12 @@ ui <- fluidPage(
                        column(8,
                               downloadButton("download_report", "Download report")
                               
-                       )
+                       ),
+                       br(), br(),
+                       h4("History of generated reports"),
+                       actionButton("refresh_history", "Clear"),
+                       DT::dataTableOutput("report_history")
+                        
                      )
             )
             
@@ -191,6 +196,24 @@ ui <- fluidPage(
 
 #backend 
 server <- function(input, output, session) {
+  ## ---- History Log (persistent) ----
+  history_file <- "history_log.csv"
+  
+  if (file.exists(history_file)) {
+    history_data <- read.csv(history_file, stringsAsFactors = FALSE)
+  } else {
+    history_data <- data.frame(
+      time = character(),
+      format = character(),
+      n_studies = numeric(),
+      n_treatments = numeric(),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  history_log <- reactiveVal(history_data)
+  ## ----------------------------------
+  
   raw_data <- reactiveVal(NULL)      # Main reactive variable to store uploaded/processed data
   #run nma
   observeEvent(input$run_nma, {
@@ -235,6 +258,17 @@ server <- function(input, output, session) {
     }
     nma
   })
+  # ---- Treatment-level NMA (Ξ³ΞΉΞ± inconsistency) ----
+  nm_model <- reactive({
+    req(raw_data())
+    tryCatch({
+      build_nm(raw_data(), random = (input$model_type == "random"))
+    }, error = function(e) {
+      NULL
+    })
+  })
+  
+  
   # ---- Data preview output ----
   output$data_preview <- DT::renderDataTable({
     req(raw_data())
@@ -425,80 +459,87 @@ server <- function(input, output, session) {
   
   
   # ---- Node-splitting results table ----
+  # Node-splitting
   output$netsplit_table <- renderTable({
-    nma <- cnma_model()
-    validate(need(!is.null(nma), "Model is not available."))
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
     tryCatch({
-      split <- netsplit(nma)
-      round(split[, c("Direct", "Indirect", "Q", "df", "p")], 3)
-    }, error = function(e) {
-      data.frame(Error = "Node-splitting failed")
-    })
+      split <- netsplit(nm)
+      round(split[, c("Direct","Indirect","Q","df","p")], 3)
+    }, error = function(e) data.frame(Error = "Node-splitting failed"))
   }, rownames = TRUE)
   
-  # ---- Global inconsistency table (Design-by-Treatment) ----
+  # Design-by-Treatment
   output$decomp_table <- renderTable({
-    nma <- cnma_model()
-    validate(need(!is.null(nma), "Model is not available."))
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
     tryCatch({
-      decomp <- decomp.design(nma)
+      decomp <- decomp.design(nm)
       round(decomp$Q.decomp, 3)
-    }, error = function(e) {
-      data.frame(Error = "Global inconsistency analysis failed")
-    })
+    }, error = function(e) data.frame(Error = "Global inconsistency analysis failed"))
   }, rownames = TRUE)
   
-  # ---- heatmap plot for inconsistency ----
+  # Netheat
   output$netheat_plot <- renderPlot({
-    nma <- cnma_model()
-    validate(need(!is.null(nma), "Model is not available."))
-    tryCatch({
-      netheat(nma)
-    }, error = function(e) {
-      plot.new()
-      text(0.5, 0.5, "Netheat plot not available", cex = 1.2)
-    })
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
+    tryCatch(netheat(nm),
+             error = function(e) { plot.new(); text(0.5,0.5,"Netheat plot not available", cex=1.2) })
   })
   
-  # ---- Funnel plot ----
+  
+  # ---- Funnel plot (treatment-level, backward-compatible) ----
   output$funnel_plot <- renderPlot({
-    req(raw_data())
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
     
-    data <- raw_data() %>% 
-      filter(!is.na(logHR), !is.na(selogHR))
-    
-    if (length(unique(data$study)) < 5) {
-      plot.new()
-      text(0.5, 0.5, "Not enough studies for a funnel plot", cex = 1.2)
-      return()
+    if (length(unique(nm$studlab)) < 5) {
+      plot.new(); text(0.5, 0.5, "Not enough studies for a funnel plot", cex = 1.2); return()
     }
     
-    nma_plot <- netmeta(
-      TE = data$logHR,
-      seTE = data$selogHR,
-      treat1 = data$treat1,
-      treat2 = data$treat2,
-      studlab = data$study,
-      sm = "HR",
-      random = (input$model_type == "random")
-    )
-    
-    treatment_order <- sort(nma_plot$trts)
-    
-    netmeta:::funnel.netmeta(nma_plot,
-                             order = treatment_order,
-                             xlab = "Comparison-adjusted effect size",
-                             contour = TRUE,
-                             contour.levels = c(0.9, 0.95, 0.99),
-                             col.contour = c("lightgray", "gray", "darkgray"),
-                             legend.pos = "bottomright")
+    # if netfunnel() is exist, use it
+    if ("netfunnel" %in% ls(getNamespace("netmeta"))) {
+      netmeta::netfunnel(
+        nm,
+        order = sort(nm$trts),
+        xlab = "Comparison-adjusted effect size",
+        contour = TRUE,
+        contour.levels = c(0.9, 0.95, 0.99),
+        legend.pos = "bottomright"
+      )
+    } else {
+      # Fallback for previous methods: S3 method funnel.netmeta
+      netmeta:::funnel.netmeta(
+        nm,
+        order = sort(nm$trts),
+        xlab = "Comparison-adjusted effect size",
+        contour = TRUE,
+        contour.levels = c(0.9, 0.95, 0.99),
+        legend.pos = "bottomright"
+      )
+    }
   })
   
   
   
-  # ---- Export Report ----
+  
+  
   observeEvent(input$export_report, {
-    req(cnma_model())
+    
+    ## ---- Record history + save to file ----
+    hist <- history_log()
+    summ <- summarize_data(raw_data())
+    new_row <- data.frame(
+      time = as.character(Sys.time()),
+      format = input$report_format,
+      n_studies = summ$n_studies,
+      n_treatments = summ$n_treatments
+    )
+    updated <- rbind(hist, new_row)
+    write.csv(updated, history_file, row.names = FALSE)
+    history_log(updated)
+    ## ---------------------------------------
+    
     
     tmpFile <- tempfile(fileext = switch(input$report_format,
                                          pdf = ".pdf",
@@ -521,6 +562,28 @@ server <- function(input, output, session) {
     
     
   })
+  observeEvent(input$refresh_history, {
+    ## Clear history: empty dataframe
+    empty_df <- data.frame(
+      time = character(),
+      format = character(),
+      n_studies = numeric(),
+      n_treatments = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    # update reactive value
+    history_log(empty_df)
+    
+    # overwrite history file
+    write.csv(empty_df, history_file, row.names = FALSE)
+  })
+  
+  
+  output$report_history <- DT::renderDataTable({
+    history_log()
+  })
+  
   
   output$download_report <- downloadHandler(
     filename = function() {
@@ -552,46 +615,74 @@ server <- function(input, output, session) {
     updateTabsetPanel(session, "main_tabs", selected = "help")
   })
   
-  # ---- Model summary (print main CNMA/NMA results) ----
   output$nma_summary <- renderPrint({
     req(cnma_model())
     nma <- cnma_model()
-    # If user requested interaction but not available, print warning
+    
+    # Fallback message αν interaction ζητήθηκε αλλά έχουμε disconnected network
     if (!is.null(attr(nma, "forced_additive")) && attr(nma, "forced_additive")) {
-      cat("Warning: Interaction model not available for disconnected network; ran additive model instead.\n\n")
+      cat("??? Interaction model is not available for a disconnected network.\n")
+      cat("Ran additive model instead.\n\n")
     }
-    # Model type heading
-    cat(">>> CNMA Model type: ",
-        ifelse(input$cnma_model_type == "interaction", "Interaction", "Additive (No Interaction)"),
-        "\n\n", sep = "")
     
-    # Print NMA summary object
-    tryCatch({
-      sum_obj <- if (input$model_type == "fixed") {
-        summary(nma, common = TRUE, random = FALSE)
-      } else {
-        summary(nma, common = FALSE, random = TRUE)
-      }
-      print(sum_obj)
-    }, error = function(e) {
-      cat("Error in summary: ", conditionMessage(e), "\n", sep = "")
-    })
+    use_common <- (input$model_type == "fixed")
+    use_random <- (input$model_type == "random")
     
-    # If interaction model: print interaction effects
-    if (input$cnma_model_type == "interaction") {
-      cat("\n--- Interaction Effects ---\n")
-      if (input$model_type == "fixed" && !is.null(nma$Int.common)) {
-        print(nma$Int.common)
-      } else if (input$model_type == "random" && !is.null(nma$Int.random)) {
-        print(nma$Int.random)
-      } else {
-        cat("No interaction terms available.\n")
-      }
+    cat("========== CNMA Summary ==========\n")
+    cat("Model type: ",
+        if (input$cnma_model_type == "interaction") "Interaction CNMA" else "Additive CNMA",
+        "\nEffect type: ",
+        if (use_random) "Random effects" else "Fixed effect",
+        "\n=================================\n\n", sep = "")
+    
+    # Main summary
+    s_bt <- tryCatch(
+      summary(nma, common = use_common, random = use_random, backtransf = TRUE),
+      error = function(e) summary(nma, common = use_common, random = use_random, backtransf = FALSE)
+    )
+    print(s_bt)
+    
+    # Extra: Interaction effects (if model is truly interaction CNMA)
+    if (input$cnma_model_type == "interaction" && inherits(nma, "netcomb")) {
+      s_raw <- summary(nma, common = use_common, random = use_random, backtransf = FALSE)
+      comps <- if (use_common) s_raw$components.common else s_raw$components.random
       
+      if (!is.null(comps) && nrow(comps) > 0) {
+        ia_sep <- if (!is.null(nma$sep.ia)) nma$sep.ia else " x "
+        ia_idx <- grepl(paste0("\\Q", ia_sep, "\\E"), rownames(comps))
+        
+        if (any(ia_idx)) {
+          TE <- suppressWarnings(as.numeric(comps$TE[ia_idx]))
+          se <- suppressWarnings(as.numeric(comps$seTE[ia_idx]))
+          p  <- suppressWarnings(as.numeric(comps$p[ia_idx]))
+          
+          ci.lb <- TE - 1.96 * se
+          ci.ub <- TE + 1.96 * se
+          
+          cat("\n--- Interaction Effects (logHR scale) ---\n")
+          out <- data.frame(
+            Interaction = rownames(comps)[ia_idx],
+            logHR = round(TE, 3),
+            HR    = round(exp(TE), 3),
+            CI.lb = round(exp(ci.lb), 3),
+            CI.ub = round(exp(ci.ub), 3),
+            pval  = signif(p, 3),
+            row.names = NULL
+          )
+          print(out, row.names = FALSE)
+        } else {
+          cat("\n(No interaction terms detected in this model.)\n")
+        }
+      }
     }
-    
   })
   
+  
+  
+  
+  
+  
+
 }
 
 shinyApp(ui = ui, server = server)
