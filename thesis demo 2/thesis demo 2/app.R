@@ -615,74 +615,47 @@ server <- function(input, output, session) {
     updateTabsetPanel(session, "main_tabs", selected = "help")
   })
   
+  # ---- Model summary (print main CNMA/NMA results) ----
   output$nma_summary <- renderPrint({
     req(cnma_model())
     nma <- cnma_model()
-    
-    # Fallback message αν interaction ζητήθηκε αλλά έχουμε disconnected network
+    # If user requested interaction but not available, print warning
     if (!is.null(attr(nma, "forced_additive")) && attr(nma, "forced_additive")) {
-      cat("??? Interaction model is not available for a disconnected network.\n")
-      cat("Ran additive model instead.\n\n")
+      cat("Warning: Interaction model not available for disconnected network; ran additive model instead.\n\n")
     }
+    # Model type heading
+    cat(">>> CNMA Model type: ",
+        ifelse(input$cnma_model_type == "interaction", "Interaction", "Additive (No Interaction)"),
+        "\n\n", sep = "")
     
-    use_common <- (input$model_type == "fixed")
-    use_random <- (input$model_type == "random")
-    
-    cat("========== CNMA Summary ==========\n")
-    cat("Model type: ",
-        if (input$cnma_model_type == "interaction") "Interaction CNMA" else "Additive CNMA",
-        "\nEffect type: ",
-        if (use_random) "Random effects" else "Fixed effect",
-        "\n=================================\n\n", sep = "")
-    
-    # Main summary
-    s_bt <- tryCatch(
-      summary(nma, common = use_common, random = use_random, backtransf = TRUE),
-      error = function(e) summary(nma, common = use_common, random = use_random, backtransf = FALSE)
-    )
-    print(s_bt)
-    
-    # Extra: Interaction effects (if model is truly interaction CNMA)
-    if (input$cnma_model_type == "interaction" && inherits(nma, "netcomb")) {
-      s_raw <- summary(nma, common = use_common, random = use_random, backtransf = FALSE)
-      comps <- if (use_common) s_raw$components.common else s_raw$components.random
-      
-      if (!is.null(comps) && nrow(comps) > 0) {
-        ia_sep <- if (!is.null(nma$sep.ia)) nma$sep.ia else " x "
-        ia_idx <- grepl(paste0("\\Q", ia_sep, "\\E"), rownames(comps))
-        
-        if (any(ia_idx)) {
-          TE <- suppressWarnings(as.numeric(comps$TE[ia_idx]))
-          se <- suppressWarnings(as.numeric(comps$seTE[ia_idx]))
-          p  <- suppressWarnings(as.numeric(comps$p[ia_idx]))
-          
-          ci.lb <- TE - 1.96 * se
-          ci.ub <- TE + 1.96 * se
-          
-          cat("\n--- Interaction Effects (logHR scale) ---\n")
-          out <- data.frame(
-            Interaction = rownames(comps)[ia_idx],
-            logHR = round(TE, 3),
-            HR    = round(exp(TE), 3),
-            CI.lb = round(exp(ci.lb), 3),
-            CI.ub = round(exp(ci.ub), 3),
-            pval  = signif(p, 3),
-            row.names = NULL
-          )
-          print(out, row.names = FALSE)
-        } else {
-          cat("\n(No interaction terms detected in this model.)\n")
-        }
+    # Print NMA summary object
+    tryCatch({
+      sum_obj <- if (input$model_type == "fixed") {
+        summary(nma, common = TRUE, random = FALSE)
+      } else {
+        summary(nma, common = FALSE, random = TRUE)
       }
+      print(sum_obj)
+    }, error = function(e) {
+      cat("Error in summary: ", conditionMessage(e), "\n", sep = "")
+    })
+    
+    
+    # If interaction model: print interaction effects
+    if (input$cnma_model_type == "interaction") {
+      cat("\n--- Interaction Effects ---\n")
+      if (input$model_type == "fixed" && !is.null(nma$Int.common)) {
+        print(nma$Int.common)
+      } else if (input$model_type == "random" && !is.null(nma$Int.random)) {
+        print(nma$Int.random)
+      } else {
+        cat("No interaction terms available.\n")
+      }
+      
     }
+    
   })
   
-  
-  
-  
-  
-  
-
 }
 
 shinyApp(ui = ui, server = server)
