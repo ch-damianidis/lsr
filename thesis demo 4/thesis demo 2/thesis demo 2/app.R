@@ -182,7 +182,12 @@ ui <- fluidPage(
                        column(8,
                               downloadButton("download_report", "Download report")
                               
-                       )
+                       ),
+                       br(), br(),
+                       h4("History of generated reports"),
+                       actionButton("refresh_history", "Clear"),
+                       DT::dataTableOutput("report_history")
+                        
                      )
             )
             
@@ -191,6 +196,24 @@ ui <- fluidPage(
 
 #backend 
 server <- function(input, output, session) {
+  ## ---- History Log (persistent) ----
+  history_file <- "history_log.csv"
+  
+  if (file.exists(history_file)) {
+    history_data <- read.csv(history_file, stringsAsFactors = FALSE)
+  } else {
+    history_data <- data.frame(
+      time = character(),
+      format = character(),
+      n_studies = numeric(),
+      n_treatments = numeric(),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  history_log <- reactiveVal(history_data)
+  ## ----------------------------------
+  
   raw_data <- reactiveVal(NULL)      # Main reactive variable to store uploaded/processed data
   #run nma
   observeEvent(input$run_nma, {
@@ -235,6 +258,17 @@ server <- function(input, output, session) {
     }
     nma
   })
+  # ---- Treatment-level NMA (για inconsistency) ----
+  nm_model <- reactive({
+    req(raw_data())
+    tryCatch({
+      build_nm(raw_data(), random = (input$model_type == "random"))
+    }, error = function(e) {
+      NULL
+    })
+  })
+  
+  
   # ---- Data preview output ----
   output$data_preview <- DT::renderDataTable({
     req(raw_data())
@@ -249,14 +283,33 @@ server <- function(input, output, session) {
     cat("Number of treatments: ", summ$n_treatments, "\n")
     cat("Percent missing data: ", summ$missing_percent, "%\n")
   })
-  # ---- Network plot ----
+  # ---- Network plot (netmeta) ----
   output$network_plot <- renderPlot({
-    req(raw_data())
-    data <- raw_data()
-    edges <- data.frame(from = data$treat1, to = data$treat2)
-    g <- igraph::graph_from_data_frame(edges, directed = FALSE)
-    plot(g, vertex.size = 30, vertex.label.cex = 0.9, vertex.label.color = "black")
-  })
+    nm <- nm_model()  # treatment-level NMA object (class "netmeta")
+    validate(need(!is.null(nm), "Run the analysis first to build the network."))
+    
+    tryCatch({
+      netmeta::netgraph(
+        nm,
+        number.of.studies = TRUE,                # δείχνει # μελετών σε κάθε ακμή
+        thickness         = "number.of.studies", # πάχος ακμής ανά # μελετών
+        multiarm          = TRUE,                # σωστή απεικόνιση multi-arm
+        points            = TRUE,                # κόμβοι
+        cex.points        = 1.4,                 # μέγεθος κόμβων
+        cex               = 1.1,                 # μέγεθος ετικετών
+        plastic           = FALSE,               # καθαρό layout
+        seq               = sort(nm$trts)        # σταθερή σειρά θεραπειών (πιο όμορφο layout)
+        # προαιρετικά χρώματα, αν θέλεις:
+        # col              = "black",
+        # col.points       = "black",
+        # col.multiarm     = "grey40"
+      )
+    }, error = function(e) {
+      plot.new()
+      text(0.5, 0.5, paste("Network plot not available:", conditionMessage(e)), cex = 1.1)
+    })
+  }, res = 144)
+  
   # ---- Forest plot ----
   output$forest_plot <- renderPlot({
     nma <- cnma_model()
@@ -425,80 +478,87 @@ server <- function(input, output, session) {
   
   
   # ---- Node-splitting results table ----
+  # Node-splitting
   output$netsplit_table <- renderTable({
-    nma <- cnma_model()
-    validate(need(!is.null(nma), "Model is not available."))
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
     tryCatch({
-      split <- netsplit(nma)
-      round(split[, c("Direct", "Indirect", "Q", "df", "p")], 3)
-    }, error = function(e) {
-      data.frame(Error = "Node-splitting failed")
-    })
+      split <- netsplit(nm)
+      round(split[, c("Direct","Indirect","Q","df","p")], 3)
+    }, error = function(e) data.frame(Error = "Node-splitting failed"))
   }, rownames = TRUE)
   
-  # ---- Global inconsistency table (Design-by-Treatment) ----
+  # Design-by-Treatment
   output$decomp_table <- renderTable({
-    nma <- cnma_model()
-    validate(need(!is.null(nma), "Model is not available."))
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
     tryCatch({
-      decomp <- decomp.design(nma)
+      decomp <- decomp.design(nm)
       round(decomp$Q.decomp, 3)
-    }, error = function(e) {
-      data.frame(Error = "Global inconsistency analysis failed")
-    })
+    }, error = function(e) data.frame(Error = "Global inconsistency analysis failed"))
   }, rownames = TRUE)
   
-  # ---- heatmap plot for inconsistency ----
+  # Netheat
   output$netheat_plot <- renderPlot({
-    nma <- cnma_model()
-    validate(need(!is.null(nma), "Model is not available."))
-    tryCatch({
-      netheat(nma)
-    }, error = function(e) {
-      plot.new()
-      text(0.5, 0.5, "Netheat plot not available", cex = 1.2)
-    })
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
+    tryCatch(netheat(nm),
+             error = function(e) { plot.new(); text(0.5,0.5,"Netheat plot not available", cex=1.2) })
   })
   
-  # ---- Funnel plot ----
+  
+  # ---- Funnel plot (treatment-level, backward-compatible) ----
   output$funnel_plot <- renderPlot({
-    req(raw_data())
+    nm <- nm_model()
+    validate(need(!is.null(nm), "Model is not available."))
     
-    data <- raw_data() %>% 
-      filter(!is.na(logHR), !is.na(selogHR))
-    
-    if (length(unique(data$study)) < 5) {
-      plot.new()
-      text(0.5, 0.5, "Not enough studies for a funnel plot", cex = 1.2)
-      return()
+    if (length(unique(nm$studlab)) < 5) {
+      plot.new(); text(0.5, 0.5, "Not enough studies for a funnel plot", cex = 1.2); return()
     }
     
-    nma_plot <- netmeta(
-      TE = data$logHR,
-      seTE = data$selogHR,
-      treat1 = data$treat1,
-      treat2 = data$treat2,
-      studlab = data$study,
-      sm = "HR",
-      random = (input$model_type == "random")
-    )
-    
-    treatment_order <- sort(nma_plot$trts)
-    
-    netmeta:::funnel.netmeta(nma_plot,
-                             order = treatment_order,
-                             xlab = "Comparison-adjusted effect size",
-                             contour = TRUE,
-                             contour.levels = c(0.9, 0.95, 0.99),
-                             col.contour = c("lightgray", "gray", "darkgray"),
-                             legend.pos = "bottomright")
+    # if netfunnel() is exist, use it
+    if ("netfunnel" %in% ls(getNamespace("netmeta"))) {
+      netmeta::netfunnel(
+        nm,
+        order = sort(nm$trts),
+        xlab = "Comparison-adjusted effect size",
+        contour = TRUE,
+        contour.levels = c(0.9, 0.95, 0.99),
+        legend.pos = "bottomright"
+      )
+    } else {
+      # Fallback for previous methods: S3 method funnel.netmeta
+      netmeta:::funnel.netmeta(
+        nm,
+        order = sort(nm$trts),
+        xlab = "Comparison-adjusted effect size",
+        contour = TRUE,
+        contour.levels = c(0.9, 0.95, 0.99),
+        legend.pos = "bottomright"
+      )
+    }
   })
   
   
   
-  # ---- Export Report ----
+  
+  
   observeEvent(input$export_report, {
-    req(cnma_model())
+    
+    ## ---- Record history + save to file ----
+    hist <- history_log()
+    summ <- summarize_data(raw_data())
+    new_row <- data.frame(
+      time = as.character(Sys.time()),
+      format = input$report_format,
+      n_studies = summ$n_studies,
+      n_treatments = summ$n_treatments
+    )
+    updated <- rbind(hist, new_row)
+    write.csv(updated, history_file, row.names = FALSE)
+    history_log(updated)
+    ## ---------------------------------------
+    
     
     tmpFile <- tempfile(fileext = switch(input$report_format,
                                          pdf = ".pdf",
@@ -521,6 +581,28 @@ server <- function(input, output, session) {
     
     
   })
+  observeEvent(input$refresh_history, {
+    ## Clear history: empty dataframe
+    empty_df <- data.frame(
+      time = character(),
+      format = character(),
+      n_studies = numeric(),
+      n_treatments = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    # update reactive value
+    history_log(empty_df)
+    
+    # overwrite history file
+    write.csv(empty_df, history_file, row.names = FALSE)
+  })
+  
+  
+  output$report_history <- DT::renderDataTable({
+    history_log()
+  })
+  
   
   output$download_report <- downloadHandler(
     filename = function() {
@@ -576,6 +658,7 @@ server <- function(input, output, session) {
     }, error = function(e) {
       cat("Error in summary: ", conditionMessage(e), "\n", sep = "")
     })
+    
     
     # If interaction model: print interaction effects
     if (input$cnma_model_type == "interaction") {

@@ -17,10 +17,13 @@ run_cnma_analysis <- function(data, interaction = FALSE, random = TRUE) {
       studlab = data$study,
       sm = "HR",
       random = random
+      
     )
     nc <- netcomb(
       nm,
-      ia.model = interaction # TRUE=interaction, FALSE=additive
+      ia.model = interaction, # TRUE=interaction, FALSE=additive,
+      sep.trts = " + "              #  separator for components
+      
     )
     attr(nc, "forced_additive") <- FALSE
     return(nc)
@@ -42,4 +45,18 @@ run_cnma_analysis <- function(data, interaction = FALSE, random = TRUE) {
     attr(dc, "forced_additive") <- interaction # TRUE αν ζήτησε interaction
     return(dc)
   }
+}
+
+
+# --- Helper: treatment-level NMA (for inconsistency) ---
+build_nm <- function(data, random = TRUE) {
+  netmeta(
+    TE     = data$logHR,
+    seTE   = data$selogHR,
+    treat1 = data$treat1,
+    treat2 = data$treat2,
+    studlab= data$study,
+    sm     = "HR",
+    random = random
+  )
 }

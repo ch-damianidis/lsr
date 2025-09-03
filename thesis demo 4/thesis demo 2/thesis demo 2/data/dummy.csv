@@ -1,6 +1,0 @@
-study,treat1,treat2,logHR,selogHR
-S1,A,B,0.20,0.10
-S2,B,C,-0.15,0.12
-S3,A,C,0.35,0.15
-S4,A,D,0.10,0.10
-S5,D,C,-0.20,0.18
