@@ -1,6 +1,24 @@
 library(netmeta)
 library(igraph)
 
+# utils/netmeta_pipeline.R
+
+build_nm <- function(data, random = TRUE) {
+  req_cols <- c("logHR", "selogHR", "treat1", "treat2", "study")
+  miss <- setdiff(req_cols, names(data))
+  if (length(miss)) stop("Missing columns: ", paste(miss, collapse = ", "))
+  
+  netmeta::netmeta(
+    TE      = data$logHR,
+    seTE    = data$selogHR,
+    treat1  = data$treat1,
+    treat2  = data$treat2,
+    studlab = data$study,
+    sm      = "HR",
+    random  = random
+  )
+}
+
 run_cnma_analysis <- function(data, interaction = FALSE, random = TRUE) {
   # Build graph to check if the treatment network is connected
   edges <- data.frame(from = data$treat1, to = data$treat2)
