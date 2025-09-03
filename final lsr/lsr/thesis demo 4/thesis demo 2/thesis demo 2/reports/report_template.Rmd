@@ -1,0 +1,45 @@
+---
+title: "Report for CLL"
+output: 
+  pdf_document: default
+  word_document: default
+  html_document: default
+params:
+  nma: NULL
+  raw_data: NULL
+---
+
+```{r setup, include=FALSE}
+nma <- params$nma
+dat <- params$raw_data
+```
+
+```{r, echo=FALSE}
+library(igraph)
+edges <- data.frame(from = dat$treat1, to = dat$treat2)
+g <- igraph::graph_from_data_frame(edges, directed = FALSE)
+plot(g)
+```
+
+```{r, echo=FALSE}
+summary(nma)
+```
+
+```{r, echo=FALSE}
+tryCatch({
+  as.data.frame.matrix(netleague(nma))
+}, error = function(e) {
+  data.frame(Message = "League table cannot be produced for this network")
+})
+```
+
+```{r, echo=FALSE}
+tryCatch({
+  ps <- netrank(nma)
+  data.frame(Treatment = names(ps$p.score),
+             P_score = round(ps$p.score, 3))
+}, error = function(e) {
+  data.frame(Message = "P-score ranking not available for this network")
+})
+```
+
