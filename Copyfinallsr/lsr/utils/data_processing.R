@@ -6,82 +6,83 @@ library(dplyr)
 
 
 
-#' Convert arm-level data to pairwise format for NMA
-#'
-#' This function takes raw arm-level data (i.e., each row is a study arm)
-#' and transforms it into a pairwise (contrast) dataset for NMA,
-#' computing the log mean ratio and its standard error for each pair of arms within each study.
-#' If the data is already in pairwise format (missing arm-level columns), it returns the data unchanged.
-#'
-#' @param data Data frame containing arm-level data with columns: study, treatment, mean, sd, n
-#' @return Data frame with columns: study, treat1, treat2, logHR, selogHR
+# ------------------------------------------------------------------------------
+# Convert arm-level data to pairwise (contrast) format for netmeta
+#
+# If the input already looks like pairwise (i.e., does not contain all arm-level
+# columns), the function returns the data unchanged.
+#
+# Expected arm-level columns: study, treatment, mean, sd, n
+# Output columns (pairwise):  study, treat1, treat2, logHR, selogHR
+#
+# Note: We keep column names 'logHR' and 'selogHR' for compatibility with the rest
+# of the app, even if the summary measure is not strictly HR in your dataset.
+# ------------------------------------------------------------------------------
 
-
-
-
-convert_to_pairwise <- function(data) {
+convert_to_pairwise <- function(data, sm = "MD") {
   required_cols <- c("study", "treatment", "mean", "sd", "n")
   
-  # If input data is NOT arm-level (does not have all required columns), return as is (assume already pairwise)
-  if (!all(required_cols %in% colnames(data))) {
+  # If not arm-level, assume it's already pairwise and return as is.
+  if (!all(required_cols %in% names(data))) {
     return(data)
   }
   
-  pairwise_list <- list()
+  pw <- netmeta::pairwise(
+    treat   = treatment,
+    mean    = mean,
+    sd      = sd,
+    n       = n,
+    studlab = study,
+    data    = data,
+    sm      = "MD"   # adjust if needed ("MD", "SMD", etc.)
+  )
   
-  studies <- unique(data$study)
-  
-  # For each study, create all possible pairs of arms
-  for (s in studies) {
-    dat <- data %>% filter(study == s)
-    
-    if (nrow(dat) < 2) next  # Skip if only one arm
-    
-    combs <- combn(1:nrow(dat), 2)   # All unique arm pairs 
-    
-    for (i in 1:ncol(combs)) {
-      idx1 <- combs[1, i]
-      idx2 <- combs[2, i]
-      
-      arm1 <- dat[idx1, ]
-      arm2 <- dat[idx2, ]
-      
-      # Compute log mean ratio (assumes means > 0)
-      mean_diff <- log(arm1$mean / arm2$mean)
-      
-      # Standard error of log ratio, using Delta method (variance propagation)
-      se_diff <- sqrt((arm1$sd^2 / (arm1$n * arm1$mean^2)) + (arm2$sd^2 / (arm2$n * arm2$mean^2)))
-      
-      # Store as a row in the list
-      pairwise_list[[length(pairwise_list) + 1]] <- data.frame(
-        study = s,
-        treat1 = arm1$treatment,
-        treat2 = arm2$treatment,
-        logHR = mean_diff,
-        selogHR = se_diff
-      )
-    }
-  }
-  # Combine all rows into a single data frame
-  bind_rows(pairwise_list)
+  # Normalize to the column names expected elsewhere in the app
+  out <- data.frame(
+    study   = pw$studlab,
+    treat1  = pw$treat1,
+    treat2  = pw$treat2,
+    logHR   = pw$TE,     # using 'logHR' name for consistency
+    selogHR = pw$seTE,
+    stringsAsFactors = FALSE
+  )
+  return(out)  
 }
 
+# ------------------------------------------------------------------------------
+# Summarize basic dataset characteristics (works for arm- or pairwise-level)
+# ------------------------------------------------------------------------------
 
 summarize_data <- function(data) {
   n_missing <- sum(is.na(data))
-  total <- prod(dim(data))
-  percent_missing <- round(100 * n_missing / total, 2)
+  total <- if (is.null(dim(data))) 0 else prod(dim(data))
+  percent_missing <- if (total > 0) round(100 * n_missing / total, 2) else NA_real_
   
-  # Combine treat1 and treat2 to get all unique treatments present
-  all_treatments <- unique(c(data$treat1, data$treat2))
+  if (all(c("treat1","treat2") %in% names(data))) {
+    # pairwise layout
+    all_treatments <- unique(c(data$treat1, data$treat2))
+    n_studies <- length(unique(data$study))
+    n_rows    <- nrow(data)
+  } else if ("treatment" %in% names(data)) {
+    # arm-level layout
+    all_treatments <- unique(data$treatment)
+    n_studies <- length(unique(data$study))
+    n_rows    <- nrow(data)
+  } else {
+    # unknown/minimal layout
+    all_treatments <- character(0)
+    n_studies <- length(unique(data$study))
+    n_rows    <- nrow(data)
+  }
   
   list(
-    n_studies = length(unique(data$study)),
-    n_arms = nrow(data),
+    n_studies = n_studies,
+    n_arms = n_rows,
     n_treatments = length(all_treatments),
     missing_percent = percent_missing
   )
 }
+
  
 
   

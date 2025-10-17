@@ -23,7 +23,7 @@ run_cnma_analysis <- function(data, interaction = FALSE, random = TRUE) {
   # Build graph to check if the treatment network is connected
   edges <- data.frame(from = data$treat1, to = data$treat2)
   g <- igraph::graph_from_data_frame(edges, directed = FALSE)
-  connected <- igraph::is_connected(g)
+  connected <- igraph::is.connected(g)
   
   if (connected) {
     # If the network is connected: run netmeta + netcomb (CNMA)
@@ -44,11 +44,13 @@ run_cnma_analysis <- function(data, interaction = FALSE, random = TRUE) {
       
       # Generate all 2-way interaction terms in the correct format ("X+Y") [SOS]
       comb.ia <- combn(comps, 2, FUN = function(x) paste(x, collapse = "+"))
+      # <-- ΑΥΤΟ είναι το fix για το Clb
+      inactive_val <- if ("Clb" %in% comps) "Clb" else NULL
       # Create C-matrix including interaction terms
-      Cmat_int <- createC(nm, comb.ia = comb.ia, inactive = "Clb")
-      
+      Cmat_int <- createC(nm, comb.ia = comb.ia,sep.trts = " + ")
+      # Run CNMA with interactions
       nc <- netcomb(nm, C.matrix = Cmat_int)
-    } else {  # Run CNMA with interactions
+    } else {  
       nc <- netcomb(
         nm,
         sep.trts = " + "

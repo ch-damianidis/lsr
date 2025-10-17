@@ -1,45 +1,365 @@
 ---
-title: "Report for CLL"
-output: 
-  pdf_document: default
-  word_document: default
-  html_document: default
+title: "Living Network Meta-Analysis - HTML Report"
+author: ""
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    df_print: paged
+    smooth_scroll: true
 params:
   nma: NULL
   raw_data: NULL
+  effect_model: "random"  # "random" or "fixed"
+  backtransf: true        # show HR (TRUE) or log(HR) (FALSE)
+  show_funnel: true
+  show_inconsistency: true
+  show_ranking: true
 ---
 
 ```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.width = 8, fig.height = 5, fig.retina = 2
+)
+
+suppressPackageStartupMessages({
+  library(netmeta)
+  library(DT)
+  library(dplyr)
+  library(igraph)
+  library(htmltools)
+  library(knitr)
+})
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+# parameters
 nma <- params$nma
-dat <- params$raw_data
+raw <- params$raw_data
+backtransf <- isTRUE(params$backtransf)
+
+# extract treatment-level netmeta from CNMA object if present
+get_nm <- function(obj) {
+  if (inherits(obj, "netmeta")) return(obj)
+  cand_names <- c("nma", "netmeta", "nm")
+  for (nmfield in cand_names) {
+    if (!is.null(obj[[nmfield]]) && inherits(obj[[nmfield]], "netmeta")) {
+      return(obj[[nmfield]])
+    }
+  }
+  NULL
+}
+
+# build treatment-level netmeta directly from raw_data (fallback)
+build_nm_from_raw <- function(dat, effect = c("random","fixed")) {
+  effect <- match.arg(effect)
+  req_cols <- c("logHR","selogHR","treat1","treat2","study")
+  if (!is.data.frame(dat) || !all(req_cols %in% names(dat))) return(NULL)
+  use_random <- (effect == "random")
+  tryCatch(
+    netmeta::netmeta(
+      TE      = dat$logHR,
+      seTE    = dat$selogHR,
+      treat1  = dat$treat1,
+      treat2  = dat$treat2,
+      studlab = dat$study,
+      sm      = "HR",
+      random  = use_random
+    ),
+    error = function(e) NULL
+  )
+}
+
+# effect model to use in fallback
+effect_model <- if (!is.null(params$effect_model)) params$effect_model else "random"
+
+nm <- get_nm(nma)
+if (is.null(nm)) {
+  nm <- build_nm_from_raw(raw, effect = effect_model)
+}
+
+# if no nma object was provided but we have nm, use nm as nma for plots/tables
+if (is.null(nma) && inherits(nm, "netmeta")) {
+  nma <- nm
+}
+
+
+summarise_raw <- function(dat) {
+  if (is.null(dat) || !is.data.frame(dat)) return(list())
+  n_studies <- length(unique(dat$study))
+  n_rows    <- nrow(dat)
+  trts      <- unique(c(dat$treat1, dat$treat2))
+  n_trts    <- length(trts)
+  miss_pct  <- round(100 * sum(is.na(dat)) / (n_rows * ncol(dat)), 2)
+  conn <- tryCatch({
+    g <- igraph::graph_from_data_frame(dat[, c("treat1","treat2")], directed = FALSE)
+    igraph::is.connected(g)
+  }, error = function(e) NA)
+  list(n_studies = n_studies, n_rows = n_rows, n_trts = n_trts,
+       miss_pct = miss_pct, connected = conn)
+}
+
+note <- function(text, type = c("info","warning","success","danger")) {
+  type <- match.arg(type)
+  HTML(sprintf('<div class="alert alert-%s" role="alert">%s</div>', type, text))
+}
+
+pick_league_matrix <- function(lt, effect = c("random","fixed")) {
+  effect <- match.arg(effect)
+  if (effect == "random" && !is.null(lt$random)) return(lt$random)
+  if (effect == "fixed"  && !is.null(lt$common)) return(lt$common)
+  if (!is.null(lt$random)) return(lt$random)
+  lt$common
+}
+
+model_label <- function(obj) {
+  if (is.null(obj)) return("-")
+  eff <- if (identical(params$effect_model, "fixed")) "Fixed effect" else "Random effects"
+  kind <- if (inherits(obj, "netcomb")) {
+    if (!is.null(attr(obj, "forced_additive")) && isTRUE(attr(obj, "forced_additive"))) {
+      "Additive CNMA (forced; disconnected)"
+    } else {
+      "CNMA (components)"
+    }
+  } else if (inherits(obj, "discomb")) {
+    "CNMA (disconnected)"
+  } else if (inherits(obj, "netmeta")) {
+    "Simple NMA"
+  } else {
+    "Unknown"
+  }
+  sprintf("%s - %s", kind, eff)
+}
 ```
 
-```{r, echo=FALSE}
-library(igraph)
-edges <- data.frame(from = dat$treat1, to = dat$treat2)
-g <- igraph::graph_from_data_frame(edges, directed = FALSE)
-plot(g)
+# 1. Executive summary
+
+```{r}
+su <- summarise_raw(raw)
+
+htmltools::tagList(
+  note(sprintf("<strong>Model:</strong> %s", model_label(nma)), "info"),
+  tags$ul(
+    tags$li(HTML(sprintf("<strong>Studies:</strong> %s", su$n_studies))),
+    tags$li(HTML(sprintf("<strong>Treatments (nodes):</strong> %s", su$n_trts))),
+    tags$li(HTML(sprintf("<strong>Network connectivity:</strong> %s", ifelse(isTRUE(su$connected), "Connected", ifelse(isFALSE(su$connected), "Disconnected", "Unknown"))))),
+    tags$li(HTML(sprintf("<strong>Missing data:</strong> %s%%", su$miss_pct)))
+  )
+)
 ```
 
-```{r, echo=FALSE}
-summary(nma)
+# 2. Data
+
+## 2.1 Preview
+```{r}
+if (is.null(raw)) {
+  note("No data available (raw_data = NULL).", "warning")
+} else {
+  DT::datatable(head(raw, 30), options = list(pageLength = 10, scrollX = TRUE))
+}
 ```
 
-```{r, echo=FALSE}
-tryCatch({
-  as.data.frame.matrix(netleague(nma))
-}, error = function(e) {
-  data.frame(Message = "League table cannot be produced for this network")
-})
+## 2.2 Summary
+```{r}
+if (!is.null(raw)) {
+  tibble::tibble(
+    Metric = c("# Studies", "# Rows (pairs)", "# Treatments", "% Missing"),
+    Value  = c(su$n_studies, su$n_rows, su$n_trts, paste0(su$miss_pct, "%"))
+  ) |>
+    knitr::kable(format = "html", align = c("l","r"))
+}
 ```
 
-```{r, echo=FALSE}
-tryCatch({
-  ps <- netrank(nma)
-  data.frame(Treatment = names(ps$p.score),
-             P_score = round(ps$p.score, 3))
-}, error = function(e) {
-  data.frame(Message = "P-score ranking not available for this network")
-})
+# 3. Methods
+
+Frequentist network meta-analysis using the **netmeta** package. If a component network meta-analysis
+(CNMA) is selected, `netcomb()` or `discomb()` is used depending on connectivity. Estimates are shown as **`r if (backtransf) 'HR' else 'log(HR)'`**.
+
+# 4. Results
+
+## 4.1 Network plot
+```{r fig.height=6}
+if (is.null(nm)) {
+  note("Treatment-level `netmeta` object is not available for the network graph.", "warning")
+} else {
+  tryCatch({
+    netmeta::netgraph(
+      nm,
+      number.of.studies = TRUE,
+      thickness = "number.of.studies",
+      multiarm = TRUE,
+      points = TRUE,
+      cex.points = 4,
+      cex = 0.9,
+      plastic = FALSE,
+      seq = sort(nm$trts)
+    )
+  }, error = function(e) {
+    plot.new(); text(0.5, 0.5, paste("Network plot not available:", conditionMessage(e)))
+  })
+}
 ```
 
+## 4.2 Forest plot
+```{r}
+if (is.null(nma)) {
+  note("Model object (nma) is NULL.", "warning")
+} else {
+  tryCatch({
+    forest(nma, backtransf = backtransf)
+  }, error = function(e) {
+    plot.new(); text(0.5, 0.5, paste("Forest plot not available:", conditionMessage(e)))
+  })
+}
+```
+
+## 4.3 League table
+```{r}
+if (is.null(nma)) {
+  note("Model object (nma) is NULL.", "warning")
+} else {
+  eff <- if (identical(params$effect_model, "fixed")) "fixed" else "random"
+  lt <- tryCatch({ netmeta::netleague(nma, common = (eff=="fixed"), random = (eff=="random"), ci=TRUE, backtransf=backtransf, bracket="(", separator=" - ") }, error = identity)
+  if (inherits(lt, "error")) {
+    note(paste("Failed to create league table:", conditionMessage(lt)), "danger")
+  } else {
+    mat <- pick_league_matrix(lt, effect = eff)
+    DT::datatable(as.data.frame(mat), options = list(pageLength = 10, scrollX = TRUE))
+  }
+}
+```
+
+## 4.4 Treatment ranking (P-score)
+```{r}
+if (isTRUE(params$show_ranking)) {
+  if (is.null(nm)) {
+    note("Treatment-level object is not available for ranking.", "warning")
+  } else {
+    ps <- tryCatch({ netmeta::netrank(nm, small.values = "desirable", method = "P-score") }, error = identity)
+    if (inherits(ps, "error")) {
+      note(paste("Failed to compute P-scores:", conditionMessage(ps)), "danger")
+    } else {
+      use_random <- !identical(params$effect_model, "fixed")
+      ranking_vec <- if (use_random && !is.null(ps$ranking.random)) ps$ranking.random else if (!use_random && !is.null(ps$ranking.common)) ps$ranking.common else ps$ranking.random %||% ps$ranking.common
+      if (is.null(ranking_vec)) {
+        note("Ranking vector not available in this netmeta version.", "warning")
+      } else {
+        tibble::tibble(Treatment = names(ranking_vec), P_score = round(as.numeric(ranking_vec), 3)) |>
+          arrange(desc(P_score)) |>
+          knitr::kable(format = "html", align = c("l","r"), col.names = c("Treatment","P-score"))
+      }
+    }
+  }
+}
+```
+
+## 4.5 Inconsistency
+```{r}
+if (isTRUE(params$show_inconsistency)) {
+  if (is.null(nm)) {
+    note("Treatment-level object is not available for inconsistency checks.", "warning")
+  } else {
+    ns <- tryCatch({ netmeta::netsplit(nm, random = TRUE, common = FALSE, backtransf = backtransf) }, error = identity)
+    if (!inherits(ns, "error")) {
+      have <- function(df, cols) intersect(cols, names(df))
+      # Direct
+      dir <- as.data.frame(ns$direct.random)
+      dir <- dir[, have(dir, c("comparison","TE","lower","upper","p","p.value","pval")), drop = FALSE]
+      names(dir)[names(dir) == "TE"]    <- "Direct"
+      names(dir)[names(dir) == "lower"] <- "LCL"
+      names(dir)[names(dir) == "upper"] <- "UCL"
+      pdir_col <- have(dir, c("p","p.value","pval"))[1]; if (!is.na(pdir_col)) names(dir)[names(dir) == pdir_col] <- "p.dir"
+      # Indirect
+      ind <- as.data.frame(ns$indirect.random)
+      ind <- ind[, have(ind, c("comparison","TE","lower","upper","p","p.value","pval")), drop = FALSE]
+      names(ind)[names(ind) == "TE"]    <- "Indirect"
+      names(ind)[names(ind) == "lower"] <- "LCL2"
+      names(ind)[names(ind) == "upper"] <- "UCL2"
+      pind_col <- have(ind, c("p","p.value","pval"))[1]; if (!is.na(pind_col)) names(ind)[names(ind) == pind_col] <- "p.ind"
+      # Compare
+      cmp <- as.data.frame(ns$compare.random)
+      # normalise p column name (if present) and keep z if present
+      if (!"p" %in% names(cmp)) {
+        altp <- have(cmp, c("p.value","pval","P","P.value"))
+        if (length(altp)) cmp$p <- cmp[[altp[1]]] else {
+          # derive p from z if z exists
+          if ("z" %in% names(cmp)) cmp$p <- 2 * stats::pnorm(-abs(cmp$z)) else cmp$p <- NA_real_
+        }
+      }
+      cmp <- cmp[, have(cmp, c("comparison","z","p")), drop = FALSE]
+      # Merge all
+      res <- dplyr::full_join(dir, ind, by = "comparison") |>
+        dplyr::left_join(cmp, by = "comparison") |>
+        dplyr::mutate(Q = ifelse(!is.na(.data$z), .data$z^2, NA_real_), df = ifelse(!is.na(.data$z), 1L, NA_integer_)) |>
+        dplyr::select(dplyr::any_of(c("comparison","Direct","Indirect","LCL","UCL","LCL2","UCL2","z","Q","df","p.dir","p.ind","p")))
+      # Round numerics
+      numcols <- c("Direct","Indirect","LCL","UCL","LCL2","UCL2","z","Q","p.dir","p.ind","p")
+      for (cc in intersect(numcols, names(res))) if (is.numeric(res[[cc]])) res[[cc]] <- round(res[[cc]], 3)
+      DT::datatable(res, options = list(pageLength = 10, scrollX = TRUE), caption = htmltools::tags$caption(style='caption-side: bottom; text-align: left;', 'Node-splitting: Direct vs Indirect'))
+    } else {
+      note(paste("Node-splitting failed:", conditionMessage(ns)), "warning")
+    }
+
+    decomp <- tryCatch({ netmeta::decomp.design(nm) }, error = identity)
+    if (!inherits(decomp, "error")) {
+      knitr::kable(round(decomp$Q.decomp, 3), format = "html", caption = "Design-by-Treatment Decomposition (Q)")
+    } else {
+      note(paste("Global inconsistency analysis failed:", conditionMessage(decomp)), "warning")
+    }
+  }
+}
+```
+
+## 4.6 Publication bias (funnel plot)
+
+```{r}
+if (isTRUE(params$show_funnel)) {
+  if (is.null(nm)) {
+    note("Treatment-level object is not available for a funnel plot.", "warning")
+  } else if (length(unique(nm$studlab)) < 5) {
+    note("Not enough studies (<5) for a reliable funnel plot.", "warning")
+  } else {
+    tryCatch({
+      if ("netfunnel" %in% ls(getNamespace("netmeta"))) {
+        netmeta::netfunnel(nm, order = sort(nm$trts), xlab = if (backtransf) "Comparison-adjusted HR" else "Comparison-adjusted log(HR)", contour = TRUE, contour.levels = c(0.9, 0.95, 0.99), legend.pos = "bottomright")
+      } else {
+        netmeta:::funnel.netmeta(nm, order = sort(nm$trts), xlab = if (backtransf) "Comparison-adjusted HR" else "Comparison-adjusted log(HR)", contour = TRUE, contour.levels = c(0.9, 0.95, 0.99), legend.pos = "bottomright")
+      }
+    }, error = function(e) { plot.new(); text(0.5, 0.5, paste("Funnel plot not available:", conditionMessage(e))) })
+  }
+}
+```
+
+# 5. Discussion
+
+Briefly interpret key findings (ranking, pairwise differences, inconsistency). Mention limitations (heterogeneity, risk of bias, subgroups, etc.).
+
+# 6. Appendix
+
+## 6.1 `summary()`
+```{r}
+if (!is.null(nma)) {
+  tryCatch({
+    summary(nma, backtransf = backtransf)
+  }, error = function(e) {
+    note(paste("summary() failed:", conditionMessage(e)), "warning")
+  })
+}
+```
+
+## 6.2 Session info
+```{r}
+sessionInfo()
+```
+
+<style>
+body { font-size: 16px; }
+h1.title { font-weight: 700; }
+.table > :not(caption) > * > * { vertical-align: middle; }
+.caption { font-style: italic; color: #666; }
+</style>
