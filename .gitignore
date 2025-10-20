@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Ignore all datasets except the final one
+lsr/data/*
+!lsr/data/HR_data_pairs_connected_fixed.xlsx
+!.gitignore
