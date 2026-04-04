@@ -7,7 +7,6 @@ An R Shiny application for automated Network Meta-Analysis (NMA) with interactiv
 The aim of this MSc thesis is to develop an interactive tool using the RShiny framework, which will support living network meta-analysis for data related to Chronic Lymphocytic Leukemia (CLL). The tool will allow data input through manual upload. The data will be automatically standardized and transformed into the appropriate format for meta-analysis, and the tool will proceed to perform the analysis.
 The expected results include the development of a fully functional tool that adheres to the principles of living meta-analysis and network meta-analysis. It will offer features such as inconsistency exploration, transitivity assessment, and the generation of visualizations including forest plots and funnel plots. Additionally, the tool will support functionalities for subgroup analysis and meta regression.
 This thesis aspires to deliver an innovative and practical tool that enhances the transparency, reproducibility, and usability of evidence synthesis in the field of therapeutic decision-making for CLL.
-It is not the latest edition so there may be some bugs.
 ## Features
 
 ### Analysis Models
