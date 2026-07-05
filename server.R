@@ -560,14 +560,12 @@ server <- function(input, output, session) {
 
     # Render to a temporary file; actual download happens via downloadHandler
     tmpFile <- tempfile(fileext = switch(input$report_format,
-                                         word = ".docx",
                                          html = ".html"))
 
 
     rmarkdown::render(
       input = "reports/report_template.Rmd",
       output_format = switch(input$report_format,
-                             word = "word_document",
                              html = "html_document"),
       output_file = tmpFile,
       params = list(
@@ -606,14 +604,12 @@ server <- function(input, output, session) {
   output$download_report <- downloadHandler(
     filename = function() {
       paste0("report_", Sys.Date(), ".", switch(input$report_format,
-                                                word = "docx",
                                                 html = "html"))
     },
     content = function(file) {
       rmarkdown::render(
         input = "reports/report_template.Rmd",
         output_format = switch(input$report_format,
-                               word = "word_document",
                                html = "html_document"),
         output_file = file,
         params = list(

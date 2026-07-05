@@ -246,8 +246,7 @@ ui <- fluidPage(
                      fluidRow(
                        column(4,
                               selectInput("report_format", "Report format:",
-                                          choices = c("Word (docx)" = "word",
-                                                      "HTML" = "html")),
+                                          choices = c("HTML" = "html")),
                               actionButton("export_report", "Generate Report")
                        ),
                        column(8,

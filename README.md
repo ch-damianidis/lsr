@@ -36,7 +36,6 @@ This thesis aspires to deliver an innovative and practical tool that enhances th
 
 ### Export Options
 - HTML reports
-- Word documents (.docx)
 
 ## Installation
 
@@ -83,7 +82,7 @@ The tool accepts data in the following formats:
 3. **Select Model**: Choose between classical NMA or component NMA
 4. **Run Analysis**: Execute the meta-analysis
 5. **Explore Results**: Interactive plots and statistics
-6. **Export**: Generate HTML or Word reports
+6. **Export**: Generate HTML reports
 
 ## System Requirements
 
@@ -95,7 +94,7 @@ The tool accepts data in the following formats:
 
 The tool generates:
 - Interactive dashboard with all analysis results
-- Downloadable reports in HTML and Word formats
+- Downloadable reports in HTML format
 - Publication-ready plots and tables
 
 
