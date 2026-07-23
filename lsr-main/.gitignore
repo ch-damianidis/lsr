@@ -1,0 +1,13 @@
+# R session files
+.RData
+.Rhistory
+.Rproj.user/
+README.html
+
+# Temp render logs and generated reports
+reports/*.log
+reports/*.html
+
+# Generated outputs (runtime files, not source)
+nma_ready_output.csv
+history_log.csv
